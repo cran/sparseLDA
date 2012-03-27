@@ -1,7 +1,7 @@
 smda <- function (x, ...) UseMethod("smda")
 
 
-smda.default <- function(x, y, Z = NULL, Rj = NULL, lambda=1e-6, stop, maxIte=50, trace=FALSE, tol=1e-4, ...){
+smda.default <- function(x, y, Z = NULL, Rj = NULL, lambda=1e-6, stop, maxIte=50, Q=R-1, trace=FALSE, tol=1e-4, ...){
   ##
   ## smda performs Sparse Mixture Disciminant Analysis
   ## Solving: argmin{|(Y*theta-X*b)|_2^2 + t*|beta|_1 + lambda*|beta|_2^2}
@@ -35,14 +35,25 @@ smda.default <- function(x, y, Z = NULL, Rj = NULL, lambda=1e-6, stop, maxIte=50
 
 
   ## this is stright from nnet:::formula
-  class.ind <- function(cl) {
+  class.ind <- function(cl) {    
     n <- length(cl)
     x <- matrix(0, n, length(levels(cl)))
     x[(1:n) + n * (as.vector(unclass(cl)) - 1)] <- 1
     dimnames(x) <- list(names(cl), levels(cl))
     x
   }
-
+orth.Q=function(dp,Qj,theta){
+      Qjp=Qj*as.vector(dp)
+      qjtheta=t(Qjp)%*%theta
+      theta=theta-Qj%*%qjtheta
+      thetan=sqrt(apply(dp*theta^2,2,sum))
+      scale(theta,FALSE,thetan)
+    }
+    rtheta=function(K,dp){
+      jj=rnorm(K);
+      jj/sqrt(sum(jj^2)*dp)
+    }
+    
   if(is.factor(y))
     {
       classes <- levels(y)
@@ -63,7 +74,7 @@ smda.default <- function(x, y, Z = NULL, Rj = NULL, lambda=1e-6, stop, maxIte=50
   for(i in seq(along = classes))
     {
       tmp <- subClasses[subClasses == classes[i]]
-      subClasses[subClasses == classes[i]] <- paste(tmp, seq(along = tmp), sep = "|")
+      subClasses[subClasses == classes[i]] <- paste(tmp, seq(along = tmp), sep = ".")
     }
   
   if(!is.matrix(x)) x <- as.matrix(x)
@@ -77,8 +88,9 @@ smda.default <- function(x, y, Z = NULL, Rj = NULL, lambda=1e-6, stop, maxIte=50
   if(is.null(Z))
     {
       library(mda)
-      tmp <- mda.start(x, factorY, subclasses = Rj,  start.method = "lvq")
+      tmp <- mda.start(x, factorY, subclasses = Rj,  start.method = "kmeans")
       Z <- matrix(0, nrow = nrow(x), ncol = sum(Rj))
+      browser()
       for(i in seq(along = tmp))
         {
           colIndex <- which(classKey == names(tmp)[i])
@@ -87,105 +99,108 @@ smda.default <- function(x, y, Z = NULL, Rj = NULL, lambda=1e-6, stop, maxIte=50
         }
       rm(tmp)
     }
-
+  Isubcl <- apply(Z,1,which.max)
   colnames(Z) <- subClasses
   factorSubY <- factor(colnames(Z)[apply(Z, 1, which.max)])
 
-  R <- dim(Z)[2] ## number of subclasses
+  R <- dim(Z)[2] ## total number of subclasses
+  if(Q>(R-1))stop("at most R-1 variates allowed")
   RSSold <- 1e8 
   RSS <- 1e6
-  ite <- 0
-  Zhat <- matrix(0,N,R-1)
-  Dp <- apply(Z,2,sum)
-  Dp_inv <- diag(1/sqrt(Dp/N)) ## R x R
-  theta <- 1/sum(diag(Dp/N))*diag(rep(1,R))[,1:(R-1)]/R
-  Ztheta <- Z%*%theta  ## N x R-1
+  item <- 0
+  Zhat <- matrix(0,N,Q)
+  dpi <- apply(Z,2,sum)/N
+  zdp <- scale(Z, FALSE, dpi) 
+  theta <- matrix(0,R,Q)
+  Ztheta <- Z%*%theta  ## N x Q
   rss <- rep(0,maxIte)
-  b <- matrix(0,p,R-1)
-  if (length(stop)< (R-1)){
-    stop <- rep(stop[1],1,R-1)
+  b <- matrix(0,p,Q)
+  if (length(stop)< Q){
+    stop <- rep(stop[1],1,Q)
   }
   if (stop[1]<0) sparse <- "varnum" else sparse <- "penalty" 
 
-
-  while (abs(RSSold-RSS)/RSS > tol & ite < maxIte){ 
+  while (abs(RSSold-RSS)/RSS > tol & item < maxIte){ 
     RSSold <- RSS
-    ite <- ite + 1
-    ## 1. Estimate beta:    
-    for (j in 1:(R-1)){
-      Zc <- Ztheta[,j]
-      beta<- solvebeta(x, Zc, paras=c(lambda, abs(stop[j])),sparse=sparse)
-      b[,j] <- t(beta)
-      Zhat[,j] <- x%*%b[,j]
-    }    
-
-    ## 2. Optimal scores: (balanced Procrustes problem)
-    B <- t(Z)%*%Zhat
-    sb <- svd(B,nu=R-1,nv=R-1)
-    theta.old <- theta
-    theta <- Dp_inv%*%sb$u%*%t(sb$v)
+    item <- item + 1
+    Qj=matrix(1,R,1)
+    ## 1. Estimate beta and theta
+        for(j in 1:Q){
+      RSS <- 1e6
+      RSSold <- Inf
+      ite <- 0
+      thetaj=rtheta(R,dpi)
+      thetaj=orth.Q(dpi,Qj,thetaj)
+      while (abs(RSSold-RSS)/RSS > tol & ite < maxIte){ 
+        RSSold <- RSS
+        ite <- ite + 1
+        ## 1. Estimate beta:    
+        Yc <- Z%*%thetaj 
+        beta <- solvebeta(x, Yc, paras=c(lambda, abs(stop[j])),sparse=sparse) # elasticnet to estimate beta
+        yhatj=x%*%beta
+        thetaj=orth.Q(dpi,Qj,drop(t(zdp)%*%yhatj))
+        RSS=sum((yhatj-Yc)^2)+lambda*sum(beta^2)
+        if (trace){ 
+          cat('ite: ', ite, ' ridge cost: ', RSS, ' |b|_1: ', sum(abs(beta)),'\n')
+        }
+      }
+      rss[j]=RSS
+      Qj=cbind(Qj,thetaj)
+      theta[,j]=thetaj
+      b[,j]=beta
+    }
+    Zhat <- x%*%b
     Ztheta <- Z%*%theta
-    RSS <- sum((Ztheta-Zhat)*(Ztheta-Zhat))
+    RSS <- sum((Ztheta-Zhat)^2) + lambda*sum(b^2)
     rss[ite] <- RSS
     if (trace){
-      cat('ite: ', ite, ' RSS: ', RSS,'\n')
+      cat('ite: ', item, ' ridge cost: ', RSS, ' l1-norm: ', sum(abs(b)), '\n')
     }
 
-    ## 3. update parameter estimates:
-    Sigma <- matrix(0,R-1,R-1)
-    mu <- matrix(0,(R-1)*R,K)
-    dim(mu) <- c(R-1,R,K)
+    ## 2. update parameter estimates - Expectation Maximization:
+    Sigma <- matrix(0,Q,Q)
+    mu <- matrix(0,Q*R,K)
+    dim(mu) <- c(Q,R,K)
     for (i in 1:K){
       IK <- (sum(Rj[1:i-1])+1):(sum(Rj[1:i-1])+Rj[i])
-      Ik <- apply(Z[,IK, drop = FALSE]>0,1,any)
-      Ik.length <- sum(Ik)
       for (j in 1:Rj[i]){
-        mu[,IK[j],i] = apply(matrix(1,Ik.length,1)%*%t(Z[Ik,IK[j]])%*%Zhat[Ik,,drop = FALSE],2,sum)/Dp[IK[j]]
-        Sigma = Sigma + t(Zhat[Ik,,drop = FALSE]-matrix(1,Ik.length,1)%*%t(matrix(mu[,IK[j],i])))%*%(Z[Ik,IK[j]]%*%matrix(1,1,Ik.length))%*%(Zhat[Ik,,drop = FALSE]-
-          matrix(1,Ik.length,1)%*%t(matrix(mu[,IK[j],i])))/(Ik.length-Rj[i])
+              Ik <- which(Isubcl==IK[j])
+              Ik.length <- length(Ik)
+              sumZ <- sum(Z[Ik,IK[j]])
+        mu[,IK[j],i] = apply(((Z[Ik,IK[j]])%*%matrix(1,1,Q))*Zhat[Ik,,drop = FALSE],2,sum)/sumZ
+        Sigma = Sigma + t(Zhat[Ik,,drop = FALSE]-matrix(1,Ik.length,1)%*%t(matrix(mu[,IK[j],i]))*(Z[Ik,IK[j]]%*%matrix(1,1,Q)))%*%(Zhat[Ik,,drop = FALSE]-
+          matrix(1,Ik.length,1)%*%t(matrix(mu[,IK[j],i])))/sumZ
       }
     }
-    Sigma_inv <- solve(Sigma + 1e-2*diag(rep(1,R-1)))
+    if (kappa(Sigma)>1e8){
+      Sigma = Sigma + 1e-3*diag(rep(1,Q))
+    }
+    Sigma_inv <- solve(Sigma)
 
     for (i in 1:K){
       IK <- (sum(Rj[1:i-1])+1):(sum(Rj[1:i-1])+Rj[i])
-      Ik <- apply(Z[,IK,drop = FALSE]>0,1,any)
-      Ik.length <- sum(Ik)
-      Dmahal_K <- matrix(0,Ik.length,Rj[i])
+      Dmahal_K <- matrix(0,N,Rj[i])
       for (j in 1:Rj[i]){
-        Dmahal_K[,j] <- diag((Zhat[Ik,,drop = FALSE]-matrix(1,Ik.length,1)%*%t(matrix(mu[,IK[j],i])))%*%Sigma_inv%*%t(Zhat[Ik,,drop = FALSE]-
-                                                                                                         matrix(1,Ik.length,1)%*%t(matrix(mu[,IK[j],i]))))
+        Dmahal_K[,j] <- diag((Zhat-matrix(1,N,1)%*%t(matrix(mu[,IK[j],i])))%*%Sigma_inv%*%t(Zhat-
+                                                                                                         matrix(1,N,1)%*%t(matrix(mu[,IK[j],i]))))
       }
-      sum_K <- apply(Z[Ik,IK, drop = FALSE]*exp(-Dmahal_K/2),1,sum)
+      sum_K <- apply(matrix(1,N,1)%*%dpi[IK]*exp(-Dmahal_K/2),1,sum)
       for (j in 1:Rj[i]){
-        Z[Ik,IK[j]] <- Z[Ik,IK[j]]*exp(-Dmahal_K[,j]/2)/(sum_K+1e-6)
+        Z[,IK[j]] <- dpi[IK[j]]*exp(-Dmahal_K[,j]/2)/(sum_K+1e-3)
       }
-      Z[Ik,IK] <- Z[Ik,IK]/(apply(Z[Ik,IK, drop = FALSE],1,sum)*rep(1,1,Rj[i]))
+      dpi[IK] <- sum(Z[,IK])
+      dpi[IK] <- dpi[IK]/sum(dpi[IK])
     }
+     zdp <- scale(Z, FALSE, dpi)
+    # end update of parameters Expectation-Maximization.
     Ztheta <- Z%*%theta
-    Dp <- apply(Z,2,sum)
-    Dp_inv <- diag(1/sqrt(Dp/N)) ## R x R
+    RSS <- sum((Ztheta-Zhat)^2)+lambda*sum(b^2)
+      if (trace){  
+    cat('EM update, ridge cost: ', RSS, ' l1-norm: ', sum(abs(b)), '\n')
+  	}
+  	if (ite==maxIte){warning('Forced exit. Maximum number of iterations reached in smda step.')}
   }
-
-  ## Remove trivial directions
-  Ik <- sb$d > 1e-6
-  M <- sum(Ik)
-  theta <- theta[,1:M]
-  Ztheta <- Z%*%theta
-  b <- b[,1:M]
-  Zhat <- Zhat[,1:M]
-  for (j in 1:M){
-    Zc <- Ztheta[,j]
-    beta<- solvebeta(x, Zc, paras=c(lambda, abs(stop[j])),sparse=sparse)
-    b[,j] <- t(beta)
-    Zhat[,j] <- x%*%b[,j]
-  }
-  if (trace){
-    RSS <- sum((Ztheta-Zhat)*(Ztheta-Zhat))
-    cat('final update, RSS: ', RSS,'\n')
-  }
-
-
+  
   notZero <- apply(b, 1, function(x) any(x != 0))
   b <- b[notZero,,drop = FALSE]
   origP <- ncol(x)
@@ -201,14 +216,19 @@ smda.default <- function(x, y, Z = NULL, Rj = NULL, lambda=1e-6, stop, maxIte=50
                  beta = b,
                  theta = theta,
                  Z = Z,
-                 Zhat = Zhat,
                  Rj = Rj,
+                 K = K,
+                 mu = mu,
+                 Sigma = Sigma,
+                 Sigma_inv = Sigma_inv,
+                 dpi = dpi,
                  varNames = varNames,
                  varIndex = which(notZero),
                  origP = origP,
                  rss = rss[1:ite],
                  fit = lobj,
                  classes = classes,
+                 subClasses = subClasses,
                  lambda = lambda,
                  stop = stop),
             class = "smda")
@@ -226,18 +246,43 @@ predict.smda <- function(object, newdata = NULL, ...)
         newdata <- newdata[, object$varIndex, drop = FALSE]
       }
     x <- newdata %*% object$beta
-    subPred <- predict(object$fit, newdata = x, ...)
+    #subPred <- predict(object$fit, newdata = x, ...)
+    #calculate subclass probabilities
+    Rz <- c(0,object$Rj)
+    Zt <- matrix(0,dim(x)[1],sum(object$Rj))
+    for (i in 1:object$K){
+      IK <- (sum(object$Rj[1:i-1])+1):(sum(object$Rj[1:i-1])+object$Rj[i])
+      Dmahal_K <- matrix(0,dim(x)[1],object$Rj[i])
+      for (j in 1:object$Rj[i]){
+        Dmahal_K[,j] <- diag((x-matrix(1,dim(x)[1],1)%*%t(matrix(object$mu[,IK[j],i])))%*%object$Sigma_inv%*%t(x-
+                                                                                                         matrix(1,dim(x)[1],1)%*%t(matrix(object$mu[,IK[j],i]))))
+      }
+      sum_K <- apply(matrix(1,dim(x)[1],1)%*%object$dpi[IK]*exp(-Dmahal_K/2),1,sum)
+      for (j in 1:object$Rj[i]){
+        Zt[,IK[j]] <- object$dpi[IK[j]]*exp(-Dmahal_K[,j]/2)/(sum_K+1e-3)
+      }
+    }
+      pr <- matrix(0,dim(x)[1],object$K)
+      for (i in 1:object$K){
+        pr[,i] <- apply(Zt[,(sum(Rz[1:i])+1):(sum(Rz[1:i])+Rz[i+1])],1,sum)
+      }
+      class <- factor(object$classes[apply(pr,1,which.max)], levels = object$classes)
+    colnames(pr) <- object$classes
+    colnames(Zt) <- object$subClasses
     ## We compute the posterior probs per class (not subclass) and get the class from that      
-    subPred$class <- unlist(lapply(strsplit(as.character(subPred$class), "\\|"), function(x)x[1]))
-    subPred$class <- factor(subPred$class, levels = object$classes)
-    subPred
+    #subPred$class <- unlist(lapply(strsplit(as.character(subPred$class), "\\|"), function(x)x[1]))
+    #subPred$class <- factor(subPred$class, levels = object$classes)
+    #subPred
+    list(class=class,
+         classprob = pr/apply(pr,1,sum),
+         subprob = Zt/apply(Zt,1,sum))
   }
 
 
 print.smda <- function(x, digits = max(3, getOption("digits") - 3), ...)
   {
     cat("\nCall:\n", deparse(x$call), "\n\n", sep = "")
-
+ 
     classInfo <- paste(paste(x$classes, " (", x$Rj, ")", sep = ""), collapse = ", ")
 
     if(all(x$stop < 0))
@@ -269,7 +314,7 @@ print.smda <- function(x, digits = max(3, getOption("digits") - 3), ...)
             top,
             sep = "")
       } else {
-        cat("Predictors:\n\t",
+        cat("Predictors:\t",
             top,
             "\n",
             sep = "")

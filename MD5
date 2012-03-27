@@ -1,0 +1,13 @@
+1e1c55dbddae954074799d8c75b5afc5 *DESCRIPTION
+9ee901403e196610b4c65d2c8e0aedd3 *NAMESPACE
+91b3d6649c3044207c568f9eb4045d3f *R/normalize.R
+e6f4df6a84ee8bdb36498945ced14ba6 *R/normalizetest.R
+d0382e0d1358ff37b0b3a6c947ec5284 *R/sda.R
+1ae44dbc6b4755271644f97b781b455b *R/smda.R
+6115c98332998db981b1c0b339865d33 *data/penicilliumYES.RData
+d83717ae9fb57021145503978aa8cc85 *man/normalize.Rd
+aaefe06a3f2ff7b42be5dd85e8ffc66d *man/normalizetest.Rd
+27e32c4dceda9a86e36db945a44cfc35 *man/penicilliumYES.Rd
+0de9dedf30325079300e4e7afba7bc9d *man/predict.sda.Rd
+b02a45d4666ef4a29b85dd7eddcfec08 *man/sda.Rd
+0c1a4ec1e0f62d0e6f83fec52a010a59 *man/smda.Rd
